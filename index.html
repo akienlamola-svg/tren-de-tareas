@@ -436,7 +436,7 @@ function tarjeta(t, now, conLugar){
   var borrar = borrandoTarea === t.id
     ? '<button class="btn-danger" data-act="borrar-tarea-si" data-id="'+t.id+'">Sí, borrar</button><button class="btn-ghost" data-act="borrar-tarea-no">No</button>'
     : '<button class="btn-ghost" data-act="borrar-tarea" data-id="'+t.id+'">Borrar</button>';
-  var cal = standalone && f < 5 ? '<button class="btn-ghost" data-act="ics" data-id="'+t.id+'">'+ico("campana")+' Avisos al calendario</button>' : '';
+  var cal = standalone && avisosDe(t).length ? '<button class="btn-ghost" data-act="ics" data-id="'+t.id+'">'+ico("campana")+' Avisos al calendario</button>' : '';
   return '<article class="card" style="--fc:'+F_.c+'">' +
     '<div class="card-h"><div class="badge">'+tren(f)+'</div><div class="card-t">' +
       '<div class="fase">'+F_.n+'</div>' +
@@ -608,6 +608,7 @@ function renderHoja(){
   if (!N && !F && !R){ el.innerHTML = ""; return; }
   if (F) return renderHojaAp();
   if (R) return renderHojaRec();
+  if (N.pregunta) return renderHojaAvisos();
   var a = N.apartadoId ? apartado(N.apartadoId) : null;
   var ac = a ? AREAS[a.area].c : "var(--school)";
   var primerPaso = N.desdeInicio ? 0 : 1;
@@ -675,6 +676,22 @@ function renderHojaAp(){
   inp.addEventListener("input", function(){ F.nombre = inp.value; document.getElementById("f-guardar").disabled = !inp.value.trim(); });
 }
 
+// ---------- Hoja: ¿quieres que el iPhone te avise? ----------
+function renderHojaAvisos(){
+  var t = S.tareas.find(function(x){ return x.id === N.pregunta; });
+  if (!t){ N = null; return renderHoja(); }
+  var a = apartado(t.apartadoId), ac = a ? AREAS[a.area].c : "var(--school)";
+  var lista = avisosDe(t).map(function(e){ return '<li>'+ico("campana")+'<span><b>'+fmtCorto.format(new Date(e.ms))+'</b><br>'+esc(e.sum)+'</span></li>'; }).join("");
+  document.getElementById("sheet").innerHTML = '<div class="sheet-bg"><div class="sheet" role="dialog" aria-modal="true" aria-label="Avisos" style="--ac:'+ac+'">' +
+    '<div class="sheet-top"><span class="donde">'+(a?ico(a.icono)+esc(a.nombre):"")+'</span></div>' +
+    '<h2 class="preg">¿Quieres que el iPhone te avise?</h2>' +
+    '<p class="nota">Se añadirán estos avisos al Calendario. Sonarán aunque la app esté cerrada.</p>' +
+    '<ol class="lista-p">'+lista+'</ol>' +
+    '<div class="opciones"><button class="btn btn-main" data-act="n-avisos-si">'+ico("campana")+' Sí, avisarme</button>' +
+    '<button class="btn btn-ghost grande" data-act="n-avisos-no">Ahora no</button></div>' +
+    '<p class="nota">Después, en el iPhone, pulsa «Añadir todo».</p></div></div>';
+}
+
 // ---------- Hoja: cita que se repite ----------
 function renderHojaRec(){
   var el = document.getElementById("sheet"), a = apartado(R.apartadoId), ac = a ? AREAS[a.area].c : "var(--school)";
@@ -721,33 +738,42 @@ function bajarICS(eventos, nombre){
     setTimeout(function(){ URL.revokeObjectURL(a.href); }, 4000);
   } catch(e){}
 }
-function descargarICS(t){
+// Momento del día (hh:mm) en la fecha de ms, desplazado "dias" días.
+function aLas(ms, dias, h, m){ var d = new Date(ms); d.setDate(d.getDate() + dias); d.setHours(h, m, 0, 0); return d.getTime(); }
+function mismoDia(a, b){ var x = new Date(a), y = new Date(b); return x.getFullYear() === y.getFullYear() && x.getMonth() === y.getMonth() && x.getDate() === y.getDate(); }
+// Lista de avisos de una tarea: por cada entrega pendiente, uno a las 17:30 del día en que entra en el tren bala
+// y dos a las 18:00 de las dos tardes anteriores a la entrega.
+function avisosDe(t){
   var now = Date.now(), ev = [], inicio = t.creada;
-  var hitos = parcialesDe(t).map(function(p){ return {lim:p.limite, nom:"Entrega parcial «"+p.titulo+"»", hecho:!!p.completada}; });
-  hitos.push({lim:t.limite, nom:"Entrega final", hecho:false});
+  var hitos = parcialesDe(t).map(function(p){ return {lim:p.limite, nom:"entrega parcial «"+p.titulo+"»", corto:" ("+p.titulo+")", hecho:!!p.completada}; });
+  hitos.push({lim:t.limite, nom:"entrega final", corto:"", hecho:false});
   hitos.forEach(function(h){
-    if (!h.hecho){
-      var total = h.lim - inicio;
-      [[.25,2],[.5,3],[.75,4]].forEach(function(x){
-        var ms = inicio + total*x[0];
-        if (ms > now) ev.push({ms:ms, sum:FASES[x[1]].n+" · "+t.titulo+" ("+h.nom+")", desc:FASES[x[1]].m});
-      });
-      if (h.lim > now) ev.push({ms:h.lim, sum:h.nom+" · "+t.titulo, desc:"Hoy tiene que estar lista."});
+    if (!h.hecho && h.lim > now){
+      var tarde2 = aLas(h.lim, -2, 18, 0), tarde1 = aLas(h.lim, -1, 18, 0);
+      var bala = inicio + (h.lim - inicio) * .75, aviso = aLas(bala, 0, 17, 30);
+      if (aviso < bala) aviso = aLas(bala, 1, 17, 30);
+      if (aviso > now && aviso < h.lim && !mismoDia(aviso, tarde2) && !mismoDia(aviso, tarde1) && aviso < tarde2)
+        ev.push({ms:aviso, sum:"Tren bala · "+t.titulo+h.corto, desc:"Último tramo hasta la "+h.nom+" ("+fmtLargo.format(new Date(h.lim))+"). Toca terminar."});
+      if (tarde2 > now && tarde2 > inicio) ev.push({ms:tarde2, sum:"Pasado mañana · "+t.titulo+h.corto, desc:"Pasado mañana es la "+h.nom+": "+fmtLargo.format(new Date(h.lim))+"."});
+      if (tarde1 > now && tarde1 < h.lim) ev.push({ms:tarde1, sum:"Mañana · "+t.titulo+h.corto, desc:"Mañana es la "+h.nom+": "+fmtLargo.format(new Date(h.lim))+"."});
     }
     inicio = h.lim;
   });
-  var L = [];
-  ev.forEach(function(e,i){
-    L.push("BEGIN:VEVENT","UID:"+t.id+"-"+i+"@trendetareas","DTSTAMP:"+icsFecha(now),"DTSTART:"+icsFecha(e.ms),"DTEND:"+icsFecha(e.ms+15*60e3),
+  return ev.sort(function(a,b){ return a.ms - b.ms; });
+}
+function descargarICS(t){
+  var now = Date.now(), L = [];
+  avisosDe(t).forEach(function(e,i){
+    L.push("BEGIN:VEVENT","UID:"+t.id+"-"+e.ms+"@trendetareas","DTSTAMP:"+icsFecha(now),"DTSTART:"+icsFecha(e.ms),"DTEND:"+icsFecha(e.ms+15*60e3),
       "SUMMARY:"+icsTxt(e.sum),"DESCRIPTION:"+icsTxt(e.desc),"BEGIN:VALARM","ACTION:DISPLAY","DESCRIPTION:"+icsTxt(e.sum),"TRIGGER:PT0M","END:VALARM","END:VEVENT");
   });
-  bajarICS(L, "tren-de-tareas.ics");
+  if (L.length) bajarICS(L, "tren-de-tareas.ics");
 }
 // Cita que se repite: evento de día completo con repetición y aviso a las 9:00 de los días de antelación elegidos.
 function descargarICSRec(r){
   var f = fechaLocal(r.primera), sig = new Date(f); sig.setDate(sig.getDate()+1);
   var d8 = function(x){ return x.getFullYear()+dosDig(x.getMonth()+1)+dosDig(x.getDate()); };
-  var trig = r.aviso >= 1 ? "-P"+(r.aviso-1)+"DT15H" : "PT9H";
+  var trig = r.aviso >= 1 ? "-P"+(r.aviso-1)+"DT6H30M" : "PT9H";
   bajarICS(["BEGIN:VEVENT","UID:"+r.id+"@trendetareas","DTSTAMP:"+icsFecha(Date.now()),"DTSTART;VALUE=DATE:"+d8(f),"DTEND;VALUE=DATE:"+d8(sig),
     "RRULE:FREQ=WEEKLY;INTERVAL="+r.cada,"SUMMARY:"+icsTxt(r.titulo),"DESCRIPTION:"+icsTxt(textoRepite(r)),
     "BEGIN:VALARM","ACTION:DISPLAY","DESCRIPTION:"+icsTxt(r.titulo+" · "+fmtSemana.format(f)),"TRIGGER:"+trig,"END:VALARM","END:VEVENT"], "cita-repetida.ics");
@@ -766,7 +792,7 @@ function enAviso(r){ var c = proximaCita(r), h = hoy0(); return h >= diaAviso(r,
 function textoRepite(r){
   var f = fechaLocal(r.primera), dia = fmtSemana.format(f);
   var cada = r.cada === 1 ? "Cada semana" : r.cada === 2 ? "Un " + dia + " de cada dos" : "Cada " + r.cada + " semanas";
-  var aviso = r.aviso === 0 ? "aviso el mismo día" : "aviso el " + fmtSemana.format(diaAviso(r, f)) + " antes";
+  var aviso = r.aviso === 0 ? "aviso el mismo día a las 9:00" : "aviso el " + fmtSemana.format(diaAviso(r, f)) + " antes a las 17:30";
   return cada + (r.cada === 2 ? "" : ", los " + dia + "s") + " · " + aviso;
 }
 function cuandoCita(c){
@@ -834,7 +860,11 @@ document.addEventListener("click", function(ev){
       var lim = limiteN(); if (lim <= Date.now() + 60e3) return;
       var nt = {id:uid(), apartadoId:N.apartadoId, titulo:N.titulo.trim(), creada:Date.now(), limite:lim, completada:null,
         parciales:(N.conParciales ? N.parciales : []).filter(function(p){ return p.limite < lim; }).map(function(p){ return {id:uid(), titulo:p.titulo, limite:p.limite, completada:null}; })};
-      S.tareas.push(nt); S.vistos[nt.id] = 1; N = null; guardar(); renderHoja(); break;
+      S.tareas.push(nt); S.vistos[nt.id] = 1; guardar();
+      if (avisosDe(nt).length){ N = {pregunta:nt.id}; renderHoja(); break; }
+      N = null; renderHoja(); break;
+    case "n-avisos-si": var ta2 = S.tareas.find(function(x){ return x.id === N.pregunta; }); if (ta2) descargarICS(ta2); N = null; renderHoja(); break;
+    case "n-avisos-no": N = null; renderHoja(); break;
     case "acabado": confirmandoHecho = id; borrandoTarea = null; break;
     case "hecho-no": confirmandoHecho = null; break;
     case "hecho":
